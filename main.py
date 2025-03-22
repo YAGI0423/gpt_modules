@@ -61,6 +61,8 @@ if __name__ == '__main__':
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     tokenizer.add_special_tokens({
         'pad_token': '[PAD]',
+        'cls_token': '[EOS]',
+        'mask_token': '[MASK]',
     })
 
 
@@ -69,19 +71,56 @@ if __name__ == '__main__':
         cache_dir='./dataset/',
     )
 
-    tokenizing = lambda x: tokenizer(x, truncation=True, padding='max_length')
+    user = 'User: ' + ds['train']['instruction'][0]
+    ai = 'AI: ' + ds['train']['response'][0]
+    
 
+    def tokenizing(user_text: str, ai_text: str) -> tuple[dict, dict]:
+        '''
+        >>> user_token = {
+            'input_ids': [int, ...],
+            'attention_mask': [int, ...],
+        }
+        ai_token = {
+            'input_ids': [int, ...],
+            'attention_mask': [int, ...],
+        }
+
+        '''
+
+        user_tokens = tokenizer(user_text)
+        ai_tokens = tokenizer(ai_text)['input_ids']
+        
+
+        #Create ai_token
+        create_ai_token = lambda user_att, ai_token: [-100] * len(user_att) + ai_token
+        ai_tokens = [create_ai_token(*x) for x in zip(user_tokens['attention_mask'], ai_tokens)]
+
+        return {
+            'input_idx': user_tokens['input_ids'],
+            'attention_mask': user_tokens['attention_mask'],
+            'label': ai_tokens,
+        }
+
+    
     def renameing(dataset, name: str) -> any:
         ds = dataset.rename_column('input_ids', f'{name}_input_ids')
         ds = ds.rename_column('attention_mask', f'{name}_attention_mask')
         return ds
+
+
+
     
     #Instructnion
-    ds = ds.map(lambda x: tokenizing(x['instruction']), batched=True)
+    ds = ds.map(lambda x: tokenizing(x['instruction'], x['response']), batched=True)
+
+    print(ds)
+    raise
+
     ds = renameing(ds, 'ins')
 
     #Response
-    ds = ds.map(lambda x: tokenizing(x['response']), batched=True)
+    ds = ds.map(lambda x: tokenizing(x['instruction'], x['response']), batched=True)
     ds = renameing(ds, 'res')
 
     ds = ds.remove_columns(('instruction', 'context', 'response', 'category'))
@@ -146,5 +185,6 @@ if __name__ == '__main__':
         d_ff=64,
         max_seq_length=25,
     )
+
 
 
