@@ -35,10 +35,12 @@ class GPT(Module):
 
 
     def forward(self, x: Tensor, attention_mask: Tensor=None) -> Tensor:
+
         out = self.token_embedding(x)
         out = self.embedding(out)
         out = self.dropout(out)
 
+        
         #Transformer Decoder Block
         for layer in self.layers:
             out = layer(out, attention_mask)
@@ -47,34 +49,7 @@ class GPT(Module):
         return out
 
 
-if __name__ == '__main__':
-    BATCH_SIZE = 4
-
-    '''
-    >>> DatasetDict({
-        train: Dataset({
-            features: ['instruction', 'context', 'response', 'category'],
-            num_rows: 15011
-        })
-    })
-    '''
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-    tokenizer.add_special_tokens({
-        'pad_token': '[PAD]',
-        'cls_token': '[EOS]',
-        'mask_token': '[MASK]',
-    })
-
-
-    ds = load_dataset(
-        'databricks/databricks-dolly-15k',
-        cache_dir='./dataset/',
-    )
-
-    user = 'User: ' + ds['train']['instruction'][0]
-    ai = 'AI: ' + ds['train']['response'][0]
-    
-
+if __name__ == '__main__': 
     def tokenizing(user_text: str, ai_text: str) -> tuple[dict, dict]:
         '''
         >>> user_token = {
@@ -87,13 +62,13 @@ if __name__ == '__main__':
         }
 
         '''
+        EOS_TOKEN = tokenizer.encode('[EOS]') #[50258]
 
         user_tokens = tokenizer(user_text)
         ai_tokens = tokenizer(ai_text)['input_ids']
-        
 
         #Create ai_token
-        create_ai_token = lambda user_att, ai_token: [-100] * len(user_att) + ai_token
+        create_ai_token = lambda user_att, ai_token: [-100] * len(user_att) + ai_token + EOS_TOKEN
         ai_tokens = [create_ai_token(*x) for x in zip(user_tokens['attention_mask'], ai_tokens)]
 
         return {
@@ -103,88 +78,118 @@ if __name__ == '__main__':
         }
 
     
-    def renameing(dataset, name: str) -> any:
-        ds = dataset.rename_column('input_ids', f'{name}_input_ids')
-        ds = ds.rename_column('attention_mask', f'{name}_attention_mask')
-        return ds
+    def custom_collate_fn(sample: list[dict]) -> dict[Tensor, Tensor, Tensor]:
+        '''
+        >>> sample = [
+            {
+                'input_ids': list,
+                'attention_mask': list,
+                'label': list,
+            },
+            ...
+        ]
+        return {
+            'input_ids': list,
+            'attention_mask': list,
+            'label': list,
+        }
+        '''
+        #List To Dict
+        sample_dict = {
+            'input_ids': list(),
+            'attention_mask': list(),
+            'label': list(),
+        }
+
+        max_len = 0
+
+        for x in sample:
+            sample_dict['input_ids'].append(x['input_ids'])
+            sample_dict['attention_mask'].append(x['attention_mask'])
+            sample_dict['label'].append(x['label'])
+
+            if (y_len := len(x['label'])) > max_len:
+                max_len = y_len
 
 
+        for k, values in sample_dict.items():
+            for i, v in enumerate(values):
+                sample_dict[k][i] = sample_dict[k][i] + [0] * (max_len - len(v))
+            sample_dict[k] = torch.tensor(sample_dict[k])
 
+        sample_dict['label'] = sample_dict['label']#[:, :, None] #Batch x seq x 1
+        return sample_dict
+
+    
+
+
+    BATCH_SIZE = 2
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    tokenizer.add_special_tokens({
+        'pad_token': '[PAD]',
+        'eos_token': '[EOS]',
+        'mask_token': '[MASK]',
+    })
+
+    VOCAB_SIZE = tokenizer.vocab_size + 3 #[PAD], [EOS], [MASK]
+
+
+    ds = load_dataset(
+        'databricks/databricks-dolly-15k',
+        cache_dir='./dataset/',
+    )
     
     #Instructnion
     ds = ds.map(lambda x: tokenizing(x['instruction'], x['response']), batched=True)
-
-    print(ds)
-    raise
-
-    ds = renameing(ds, 'ins')
-
-    #Response
-    ds = ds.map(lambda x: tokenizing(x['instruction'], x['response']), batched=True)
-    ds = renameing(ds, 'res')
-
+    ds = ds.rename_column('input_idx', 'input_ids')
     ds = ds.remove_columns(('instruction', 'context', 'response', 'category'))
-    print(ds)
 
-    # ds = ds.map(lambda x: tokenizing(x['instruction']), batched=True)
+
+    #get max_seq_length
+    MAX_SEQ_LEN = max(len(tk) for tk in ds['train']['label'])
+
+
+    dataLoader = torch.utils.data.DataLoader(ds['train'], batch_size=BATCH_SIZE, collate_fn=custom_collate_fn) #shuffle=True, 
     
-    # print(ds)
-    raise
-    train_test_set = ds['train'].train_test_split(test_size=0.2)
-    val_set = train_test_set['test'].train_test_split(test_size=0.5)
-
-    ds = DatasetDict({
-        'train': train_test_set['train'],
-        'valid': val_set['train'],
-        'test': val_set['test'],
-    })
-
-    print(ds, len(ds))
-
-    raise
-    text = dataset['test']['text'][0]
-
-    
-
-    
-    print(text)
-    print(len(tokenizer))
-    print(tokenizer(text))
-    raise
-
-    
-    #Create Vocabulary
-    TEXT.build_vocab(trainset, min_freq=5) #5회 이상 등장 단어만 추가
-    LABEL.build_vocab(trainset)
-
-    vocab_size = len(TEXT.vocab)
-    n_class = 2
-    
-
-    #Split Validation
-    trainset, valset = trainset.split(0.8)
-    
-
-    train_iter, val_iter, test_iter = data.BucketIterator.splits(
-        (trainset, valset, testset), 
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        repeat=False,
-    )
-    
-    for x, y in test_iter:
-        print(x, y)
-        raise
-    raise
 
     model = GPT(
-        vocab_size=15,
+        vocab_size=VOCAB_SIZE,
         n_layers=3,
         n_heads=2,
         d_model=16,
         d_ff=64,
-        max_seq_length=25,
-    )
+        max_seq_length=MAX_SEQ_LEN,
+    ).to(device)
+
+    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+
+    for data in dataLoader:
+        input_ids, att_mask, y = data['input_ids'], data['attention_mask'], data['label']
+        
+        input_ids, att_mask, y = input_ids.to(device), att_mask.to(device), y.to(device)
+
+        out = model(input_ids, att_mask)
+
+        out = out.view(-1, VOCAB_SIZE) #([batch * seq] x vocab_size)
+        y = y.view(-1) #([batch x seq], )
+        
+        loss = loss_fn(out, y)
+        print(loss)
+        raise
+        
+        
+
+
+        raise
+
+    raise
+
+
+    
 
 
 

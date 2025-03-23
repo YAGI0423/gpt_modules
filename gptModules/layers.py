@@ -23,17 +23,17 @@ class Embeddings(Module):
         
         self.segment_embedding = Embedding(2, d_model) #seg(0, 1)
         self.position_embedding = Embedding(max_seq_length, d_model)
-
+    
 
     def forward(self, x: Tensor, segment_input_ids: Tensor=None) -> Tensor:
+        device = x.device
+
         seq_len = x.size(1)
-        positions = torch.arange(seq_len).unsqueeze(0)
-        
+        positions = torch.arange(seq_len, device=device).unsqueeze(0)
         pos_emb = self.position_embedding(positions)
         
         if segment_input_ids is not None:
             x = x + self.segment_embedding(segment_input_ids)
-        
         
         return x + pos_emb
 
@@ -193,21 +193,23 @@ class MaskedMultiHeadAttention(Module):
 
     def scaledDotProductAttention(self, Q: Tensor, K: Tensor, 
                                   V: Tensor, attention_mask: Tensor=None) -> Tensor:
+        
+        device = Q.device
+
         #(batch x n_heads x seq x head_dim)
         seq_len = Q.size(-2)
 
 
         #(batch x n_heads x seq x seq)
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale.to(device)
 
 
         #Attention Mask
         if attention_mask is not None:
-            scores = self.__masked_fill(scores, attention_mask)
+            scores = self.__masked_fill(scores, attention_mask[:, None, None, :])
         
-
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq_len).view(1, 1, seq_len, seq_len)
+        causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
         scores = self.__masked_fill(scores, causal_mask)
 
 
@@ -219,7 +221,7 @@ class MaskedMultiHeadAttention(Module):
 
     def forward(self, Q: Tensor, K: Tensor, V: Tensor, 
                 attention_mask: Tensor=None) -> Tensor:
-        
+
         batch, seq, _ = Q.shape
 
         #(batch x seq x d_model) -> (batch x seq x n_heads x head_dim)
@@ -232,7 +234,12 @@ class MaskedMultiHeadAttention(Module):
         K = K.permute(0, 2, 1, 3)
         V = V.permute(0, 2, 1, 3)
 
-        out = self.scaledDotProductAttention(Q=Q, K=K, V=V, attention_mask=attention_mask)
+        out = self.scaledDotProductAttention(
+            Q=Q,
+            K=K,
+            V=V,
+            attention_mask=attention_mask,
+        )
 
         #(batch x n_heads x seq x head_dim) -> (batch x seq x d_model)
         out = out.permute(0, 2, 1, 3).contiguous().view(batch, seq, self.d_model)
@@ -295,6 +302,7 @@ class GroupedQueryAttention(Module):
 
         #Attention Mask
         if attention_mask is not None:
+            #attention_mask view 수정할 필요 있음
             scores = self.__masked_fill(scores, attention_mask)
 
 
