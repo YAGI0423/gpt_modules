@@ -246,6 +246,92 @@ class MaskedMultiHeadAttention(Module):
         return self.fc_out(out)
 
 
+class ALiBiAttenion(Module):
+    def __init__(self, d_model: int, n_heads: int, dropout: float):
+        super(ALiBiAttenion, self).__init__()
+
+        #Meta Data
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads #각 head의 차원
+        self.scale = torch.sqrt(torch.FloatTensor([self.head_dim])) #sqrt(d_k)
+
+        self.query = Linear(d_model, d_model, bias=False)
+        self.key = Linear(d_model, d_model, bias=False)
+        self.value = Linear(d_model, d_model, bias=False)
+
+        self.dropout = Dropout(dropout)
+        self.fc_out = Linear(d_model, d_model)
+
+    
+    @staticmethod
+    def __masked_fill(tensor: Tensor, mask: Tensor, fill_value='-inf') -> Tensor:
+        return tensor.masked_fill(mask==0, float(fill_value))
+    
+
+    @staticmethod
+    def __get_causal_mask(size: int) -> Tensor:
+        causal_mask = torch.ones(size, size)
+        causal_mask = torch.tril(causal_mask)
+        return causal_mask
+
+
+    def scaledDotProductAttention(self, Q: Tensor, K: Tensor, 
+                                  V: Tensor, attention_mask: Tensor=None) -> Tensor:
+        '''
+        Q, K, V ∈ (batch x seq x d_model)
+        attention_mask ∈(batch x seq)
+
+        out ∈ (batch x seq x d_model)
+        '''
+        device = Q.device
+
+        seq_len = Q.size(-2)
+
+        #(batch x n_head x q_seq x k_seq)
+        scores = torch.einsum('bnhd, bmhd -> bhnm', Q, K) / self.scale
+        
+
+        #Attention Mask
+        if attention_mask is not None:
+            att_mask = attention_mask[:, None, None, :] #(batch x 1 x 1 x seq)
+            scores = self.__masked_fill(scores, att_mask)
+
+        
+        #Causal Mask
+        causal_mask = self.__get_causal_mask(seq_len).view(1, 1, seq_len, seq_len)
+        scores = self.__masked_fill(scores, causal_mask)
+
+
+        attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
+        attention_weights = self.dropout(attention_weights)
+
+        #(batch x seq x n_heads x head_dim)
+        return torch.einsum('bhnm, bmhd -> bnhd', attention_weights, V)
+
+
+    def forward(self, Q: Tensor, K: Tensor, V: Tensor, 
+                attention_mask: Tensor=None) -> Tensor:
+        '''
+        Q, K, V ∈ (batch x seq x d_model)
+        attention_mask ∈(batch x seq)
+
+        out ∈ (batch x seq x d_model)
+        '''
+        batch, seq, _ = Q.shape
+
+        #(batch x seq x d_model) -> (batch x seq x n_heads x head_dim)
+        Q = self.query(Q).view(batch, seq, self.n_heads, self.head_dim)
+        K = self.key(K).view(batch, seq, self.n_heads, self.head_dim)
+        V = self.value(V).view(batch, seq, self.n_heads, self.head_dim)
+
+        out = self.scaledDotProductAttention(Q, K, V, attention_mask)
+        
+        #(batch x seq x n_heads x head_dim) -> (batch x seq x d_model)
+        out = out.contiguous().view(batch, seq, self.d_model)
+        return self.fc_out(out)
+
+
 class GroupedQueryAttention(Module):
     def __init__(self, d_model: int, n_heads: int, n_groups: int, dropout: float):
         super(GroupedQueryAttention, self).__init__()
@@ -926,6 +1012,14 @@ class PreNormTransformerBlock(Module):
 
         x = x + self.dropout(ffn_out)
         return x
+
+
+class ALiBiTransformerBlock(Module):
+    def __init__(self):
+        super(ALiBiTransformerBlock, self).__init__()
+
+    def forward(self, x: Tensor) -> Tensor:
+        pass
 
 
 class DeepseekTransformerBlock(Module):

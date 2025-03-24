@@ -1,56 +1,34 @@
 
 import torch
-from torch import nn
-
-from gptModules import layers
+from torch.nn import functional as F
 
 from torch import Tensor
 from torch.nn import Module
-from torch.nn import Linear
-from torch.nn import Dropout
 
-
-
+import datasets
 from datasets import DatasetDict
 from datasets import load_dataset
+
+from torch.utils.data import DataLoader
 from transformers import GPT2Tokenizer
 
-class GPT(Module):
-    def __init__(self, vocab_size: int, n_layers: int, n_heads: int, 
-                 d_model: int, d_ff: int, max_seq_length: int, dropout: float=0.1):
-        super(GPT, self).__init__()
+import argparse
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
-        self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.embedding = layers.Embeddings(max_seq_length, d_model)
-
-        self.dropout = Dropout(dropout)
-
-        #Transformer Blocks(Decoder Blocks)
-        self.layers = nn.ModuleList([
-            layers.TransformerBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)
-        ])
-
-        self.out_linear = Linear(d_model, vocab_size)
+from gptModules import models
 
 
-
-    def forward(self, x: Tensor, attention_mask: Tensor=None) -> Tensor:
-
-        out = self.token_embedding(x)
-        out = self.embedding(out)
-        out = self.dropout(out)
-
-        
-        #Transformer Decoder Block
-        for layer in self.layers:
-            out = layer(out, attention_mask)
-        
-        out = self.out_linear(out)
-        return out
+def get_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description='Argument Help')
+    parser.add_argument('--model', type=str, default='GPT', choices=('GPT', 'GPT2', 'LLAMA', 'DEEPSEEK'))
+    parser.add_argument('--device', type=str, default='CUDA', choices=('CPU', 'CUDA'))
+    return parser.parse_args()
 
 
-if __name__ == '__main__': 
-    def tokenizing(user_text: str, ai_text: str) -> tuple[dict, dict]:
+#Dataset Function Collecter=====================================
+def preprocess_dataset(dataset: datasets) -> datasets:
+    def tokenizing(user_text: str, ai_text: str, max_length: int=None) -> tuple[dict, dict]:
         '''
         >>> user_token = {
             'input_ids': [int, ...],
@@ -62,13 +40,22 @@ if __name__ == '__main__':
         }
 
         '''
+        def create_ai_token(user_att: list, ai_token: list):
+            user_len = len(user_att)
+            ai_len = max_length - user_len - 1 #max_len - user_len - [EOS](1)
+
+            return [-100] * user_len + ai_token[:ai_len] + EOS_TOKEN
+        
+
         EOS_TOKEN = tokenizer.encode('[EOS]') #[50258]
 
-        user_tokens = tokenizer(user_text)
+        user_text = ['user: ' + text for text in user_text]
+        ai_text = ['ai: ' + text for text in ai_text]
+
+        user_tokens = tokenizer(user_text, max_length=max_length-1, truncation=True)
         ai_tokens = tokenizer(ai_text)['input_ids']
 
         #Create ai_token
-        create_ai_token = lambda user_att, ai_token: [-100] * len(user_att) + ai_token + EOS_TOKEN
         ai_tokens = [create_ai_token(*x) for x in zip(user_tokens['attention_mask'], ai_tokens)]
 
         return {
@@ -76,58 +63,92 @@ if __name__ == '__main__':
             'attention_mask': user_tokens['attention_mask'],
             'label': ai_tokens,
         }
+    
+    ds = dataset.map(lambda x: tokenizing(x['instruction'], x['response'], max_length=MAX_SEQ_LEN), batched=True)
+    ds = ds.rename_column('input_idx', 'input_ids')
+    ds = ds.remove_columns(('instruction', 'context', 'response', 'category'))
+    return ds
 
     
-    def custom_collate_fn(sample: list[dict]) -> dict[Tensor, Tensor, Tensor]:
-        '''
-        >>> sample = [
-            {
-                'input_ids': list,
-                'attention_mask': list,
-                'label': list,
-            },
-            ...
-        ]
-        return {
+def custom_collate_fn(sample: list[dict]) -> dict[Tensor, Tensor, Tensor]:
+    '''
+    >>> sample = [
+        {
             'input_ids': list,
             'attention_mask': list,
             'label': list,
-        }
-        '''
-        #List To Dict
-        sample_dict = {
-            'input_ids': list(),
-            'attention_mask': list(),
-            'label': list(),
-        }
+        },
+        ...
+    ]
+    return {
+        'input_ids': list,
+        'attention_mask': list,
+        'label': list,
+    }
+    '''
+    #List To Dict
+    sample_dict = {
+        'input_ids': list(),
+        'attention_mask': list(),
+        'label': list(),
+    }
 
-        max_len = 0
+    max_len = 0
 
-        for x in sample:
-            sample_dict['input_ids'].append(x['input_ids'])
-            sample_dict['attention_mask'].append(x['attention_mask'])
-            sample_dict['label'].append(x['label'])
+    for x in sample:
+        sample_dict['input_ids'].append(x['input_ids'])
+        sample_dict['attention_mask'].append(x['attention_mask'])
+        sample_dict['label'].append(x['label'])
 
-            if (y_len := len(x['label'])) > max_len:
-                max_len = y_len
+        if (y_len := len(x['label'])) > max_len:
+            max_len = y_len
 
 
-        for k, values in sample_dict.items():
-            for i, v in enumerate(values):
-                sample_dict[k][i] = sample_dict[k][i] + [0] * (max_len - len(v))
-            sample_dict[k] = torch.tensor(sample_dict[k])
+    for k, values in sample_dict.items():
+        for i, v in enumerate(values):
+            sample_dict[k][i] = sample_dict[k][i] + [0] * (max_len - len(v))
+        sample_dict[k] = torch.tensor(sample_dict[k])
 
-        sample_dict['label'] = sample_dict['label']#[:, :, None] #Batch x seq x 1
-        return sample_dict
+    sample_dict['label'] = sample_dict['label']#[:, :, None] #Batch x seq x 1
+    return sample_dict
 
+
+def split_datasets(dataset: datasets) -> datasets:
+    train_test = dataset['train'].train_test_split(test_size=0.2)
+    test_valid = train_test['test'].train_test_split(test_size=0.5)
+
+    return DatasetDict({
+        'train': train_test['train'],
+        'test': test_valid['train'],
+        'valid': test_valid['test'],
+    })
+#End============================================================
+
+
+def predict(model: Module, x: dict, device: str='cuda:0') -> Tensor:
+    input_ids, att_mask, y = x['input_ids'], x['attention_mask'], x['label']
+    input_ids, att_mask, y = input_ids.to(device), att_mask.to(device), y.to(device)
+
+    y_hat = model(input_ids, att_mask).view(-1, VOCAB_SIZE)
+    y = y.view(-1)
+
+    return F.cross_entropy(y_hat, y, ignore_index=-100)
     
 
 
-    BATCH_SIZE = 2
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if __name__ == '__main__': 
+    args = get_args()
+    
 
+    EPOCH = 3
+    BATCH_SIZE = 8
+    MAX_SEQ_LEN = 1000
+    
+    device = args.device.lower()
 
+    
+    #Set Tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     tokenizer.add_special_tokens({
         'pad_token': '[PAD]',
@@ -138,55 +159,117 @@ if __name__ == '__main__':
     VOCAB_SIZE = tokenizer.vocab_size + 3 #[PAD], [EOS], [MASK]
 
 
+
+    #Set Datsets
     ds = load_dataset(
         'databricks/databricks-dolly-15k',
         cache_dir='./dataset/',
     )
+    ds = preprocess_dataset(ds)
+    ds = split_datasets(ds) #train, val, test
+
+
+    #Set Model
+    model_args = {
+        'vocab_size': VOCAB_SIZE,
+        'n_layers': 9,
+        'n_heads': 9,
+        'd_model': 576,
+        'd_ff': 2304,
+        'max_seq_length': MAX_SEQ_LEN,
+    }
+
+    if args.model == 'GPT':
+        model = models.GPT(**model_args).to(device)
+    elif args.model == 'GPT2':
+        model = models.GPT2(**model_args).to(device)
+    elif args.model == 'LLAMA':
+        pass
+    elif args.model == 'DEEPSEEK':
+        pass
+    else:
+        raise Exception()
     
-    #Instructnion
-    ds = ds.map(lambda x: tokenizing(x['instruction'], x['response']), batched=True)
-    ds = ds.rename_column('input_idx', 'input_ids')
-    ds = ds.remove_columns(('instruction', 'context', 'response', 'category'))
+
+    #Set Train
+    optim = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
 
 
-    #get max_seq_length
-    MAX_SEQ_LEN = max(len(tk) for tk in ds['train']['label'])
-
-
-    dataLoader = torch.utils.data.DataLoader(ds['train'], batch_size=BATCH_SIZE, collate_fn=custom_collate_fn) #shuffle=True, 
+    
+    train_losses = list()
+    val_losses = list()
     
 
-    model = GPT(
-        vocab_size=VOCAB_SIZE,
-        n_layers=3,
-        n_heads=2,
-        d_model=16,
-        d_ff=64,
-        max_seq_length=MAX_SEQ_LEN,
-    ).to(device)
+    for e in range(EPOCH):
+        train_loader = DataLoader(
+            ds['train'],
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+            collate_fn=custom_collate_fn
+        )
+        train_loader = tqdm(train_loader)
 
-    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
-    for data in dataLoader:
-        input_ids, att_mask, y = data['input_ids'], data['attention_mask'], data['label']
-        
-        input_ids, att_mask, y = input_ids.to(device), att_mask.to(device), y.to(device)
-
-        out = model(input_ids, att_mask)
-
-        out = out.view(-1, VOCAB_SIZE) #([batch * seq] x vocab_size)
-        y = y.view(-1) #([batch x seq], )
-        
-        loss = loss_fn(out, y)
-        print(loss)
-        raise
-        
+        test_loader = DataLoader(
+            ds['test'],
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            collate_fn=custom_collate_fn
+        )
         
 
+        val_loader = DataLoader(
+            ds['valid'],
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            collate_fn=custom_collate_fn
+        )
+        
 
-        raise
+        model.train()
+        for train_data in train_loader:
+            optim.zero_grad()
+            train_loss = predict(model, train_data, device=device)
 
-    raise
+            train_loss.backward()
+            optim.step()
+
+            train_loss = train_loss.item()
+            
+
+            desc = f'train loss: {train_loss:.3f}'
+            train_loader.set_description(desc)
+            train_losses.append(train_loss)
+            
+
+        
+        #valid 
+        model.eval()
+        with torch.no_grad():
+            for val_data in val_loader:
+                val_loss = predict(model, val_data, device=device).item()
+                val_losses.append(val_loss)
+
+
+    #Test
+    model.eval()
+    with torch.no_grad():
+        for test_data in test_loader:
+            val_loss = predict(model, test_data, device=device).item()
+            val_losses.append(val_loss)
+        
+    
+
+
+
+    plt.subplot(2, 1, 1)
+    plt.plot(train_losses)
+
+    plt.subplot(2, 1, 2)
+    plt.plot(val_losses)
+
+
+    plt.show()
 
 
     
