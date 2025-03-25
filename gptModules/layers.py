@@ -247,7 +247,7 @@ class MaskedMultiHeadAttention(Module):
 
 
 class ALiBiAttenion(Module):
-    def __init__(self, d_model: int, n_heads: int, dropout: float):
+    def __init__(self, d_model: int, n_heads: int, max_seq_length: int, dropout: float):
         super(ALiBiAttenion, self).__init__()
 
         #Meta Data
@@ -255,6 +255,8 @@ class ALiBiAttenion(Module):
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads #각 head의 차원
         self.scale = torch.sqrt(torch.FloatTensor([self.head_dim])) #sqrt(d_k)
+
+        self.alibi_emb = ALiBiEmbeddings(n_heads, max_seq_length)
 
         self.query = Linear(d_model, d_model, bias=False)
         self.key = Linear(d_model, d_model, bias=False)
@@ -279,17 +281,21 @@ class ALiBiAttenion(Module):
     def scaledDotProductAttention(self, Q: Tensor, K: Tensor, 
                                   V: Tensor, attention_mask: Tensor=None) -> Tensor:
         '''
-        Q, K, V ∈ (batch x seq x d_model)
+        Q, K, V ∈ (batch x seq x n_heads x head_dim)
         attention_mask ∈(batch x seq)
 
         out ∈ (batch x seq x d_model)
         '''
         device = Q.device
 
-        seq_len = Q.size(-2)
+        seq_len = Q.size(1)
 
         #(batch x n_head x q_seq x k_seq)
-        scores = torch.einsum('bnhd, bmhd -> bhnm', Q, K) / self.scale
+        scores = torch.einsum('bnhd, bmhd -> bhnm', Q, K) / self.scale.to(device)
+
+
+        #ALiBi Emb(batch x n_head x q_seq x k_seq)
+        scores = self.alibi_emb(scores)
         
 
         #Attention Mask
@@ -299,7 +305,7 @@ class ALiBiAttenion(Module):
 
         
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq_len).view(1, 1, seq_len, seq_len)
+        causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
         scores = self.__masked_fill(scores, causal_mask)
 
 
@@ -333,8 +339,121 @@ class ALiBiAttenion(Module):
 
 
 class GroupedQueryAttention(Module):
-    def __init__(self, d_model: int, n_heads: int, n_groups: int, dropout: float):
+    '''
+    RoPE 적용된 GQA
+    '''
+    def __init__(self, d_model: int, n_heads: int, n_groups: int, max_seq_length: int, dropout: float, base: int):
         super(GroupedQueryAttention, self).__init__()
+        assert n_heads % n_groups == 0, '`n_heads` must be divisible by `n_groups`'
+
+        #Meta Data
+        self.d_model = d_model #32
+        self.n_heads = n_heads #8
+        self.n_groups = n_groups #2
+
+        self.head_dim = d_model // n_heads #32 // 8 = 4
+        self.scale = torch.sqrt(torch.FloatTensor([self.head_dim])) #sqrt(d_k)
+
+        #embedding
+        self.query_rotary_emb = RotaryPositionalEmbeddings(self.head_dim, max_seq_length, base)
+        self.key_rotary_emb = RotaryPositionalEmbeddings(self.head_dim, max_seq_length, base)
+
+        #Layer
+        self.w_q = Linear(d_model, d_model, bias=False) #(32 x 32)
+
+        #share K와 V
+        #d_model(32) // n_groups(2) = 16
+        self.w_k = Linear(d_model, d_model // n_groups, bias=False) #(32 x 16)
+        self.w_v = Linear(d_model, d_model // n_groups, bias=False) #(32 x 16)
+
+
+        self.dropout = Dropout(dropout)
+        self.fc_out = Linear(d_model, d_model) #(32 x 32)
+
+
+    @staticmethod
+    def __masked_fill(tensor: Tensor, mask: Tensor, fill_value='-inf') -> Tensor:
+        return tensor.masked_fill(mask==0, float(fill_value))
+    
+
+    @staticmethod
+    def __get_causal_mask(size: int) -> Tensor:
+        causal_mask = torch.ones(size, size)
+        causal_mask = torch.tril(causal_mask)
+        return causal_mask
+
+
+    def scaledDotProductAttention(self, Q: Tensor, K: Tensor, 
+                                  V: Tensor, attention_mask: Tensor) -> Tensor:
+        '''
+        Q ∈ (batch x seq x n_group x H/G(n_heads//group) x head_dim)
+        K, V ∈ (batch x seq x n_groups x head_dim)
+        attention_mask ∈(batch x seq)
+
+        out ∈ (batch x seq x n_group x H/G(n_heads//group) x head_dim)
+        '''
+        device = Q.device
+
+        seq = Q.size(1)
+
+        #(batch x seq x n_group x H/G x seq)
+        scores = torch.einsum('bnghd, bmgd -> bnghm', Q, K) / self.scale.to(device)
+
+        #Attention Mask
+        if attention_mask is not None:
+            scores = self.__masked_fill(scores, attention_mask[:, None, None, None, :])
+
+        #Causal Mask
+        causal_mask = self.__get_causal_mask(seq).to(device).view(1, seq, 1, 1, seq)
+        scores = self.__masked_fill(scores, causal_mask)
+
+
+        attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
+        attention_weights = self.dropout(attention_weights)
+
+        out = torch.einsum('bnghm,bmgd -> bnghd', attention_weights, V)
+        return out
+
+        
+    def forward(self, Q: Tensor, K: Tensor, V: Tensor,
+                attention_mask: Tensor=None) -> Tensor:
+        '''
+        Q, K, V ∈ (batch x seq x d_model)
+        attention_mask ∈(batch x seq)
+
+        out ∈ (batch x seq x d_model)
+        '''
+        batch, seq, _ = Q.shape
+
+        #(batch x seq x d_model) -> (batch x seq x n_heads x head_dim)
+        Q = self.w_q(Q).view(batch, seq, self.n_heads, self.head_dim)
+
+        # (batch x seq x n_group x H/G(n_heads//group) x head_dim)
+        Q = Q.view(batch, seq, self.n_groups, self.n_heads // self.n_groups, self.head_dim)
+
+
+        #(batch x seq x d_model) -> (batch x seq x n_groups x head_dim)
+        K = self.w_k(K).view(batch, seq, self.n_groups, self.head_dim)
+        K = self.key_rotary_emb(K)
+
+        V = self.w_v(V).view(batch, seq, self.n_groups, self.head_dim)
+
+
+        #(batch x seq x n_groups x H/G x head_dim) -> (batch x seq x d_model)
+        out = self.scaledDotProductAttention(Q, K, V, attention_mask)
+        out = out.contiguous().view(batch, seq, self.d_model)
+
+        #(batch x seq x d_model)
+        out = self.fc_out(out)
+        return out
+
+
+class GroupedQueryAttentionWithoutRoPE(Module):
+    '''
+    RoPE 미적용 GQA
+    '''
+    def __init__(self, d_model: int, n_heads: int, n_groups: int, dropout: float):
+        super(GroupedQueryAttentionWithoutRoPE, self).__init__()
         assert n_heads % n_groups == 0, '`n_heads` must be divisible by `n_groups`'
 
         #Meta Data
@@ -380,20 +499,22 @@ class GroupedQueryAttention(Module):
 
         out ∈ (batch x seq x n_group x H/G(n_heads//group) x head_dim)
         '''
+        device = Q.device
+
         seq = Q.size(1)
 
         #(batch x seq x n_group x H/G x seq)
-        scores = torch.einsum('bnghd,bmgd -> bnghm', Q, K) / self.scale
+        scores = torch.einsum('bnghd,bmgd -> bnghm', Q, K) / self.scale.to(device)
 
 
         #Attention Mask
         if attention_mask is not None:
             #attention_mask view 수정할 필요 있음
-            scores = self.__masked_fill(scores, attention_mask)
+            scores = self.__masked_fill(scores, attention_mask[:, None, None, None, :])
 
 
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq).view(1, seq, 1, 1, seq)
+        causal_mask = self.__get_causal_mask(seq).to(device).view(1, seq, 1, 1, seq)
         scores = self.__masked_fill(scores, causal_mask)
 
 
@@ -435,7 +556,7 @@ class GroupedQueryAttention(Module):
 
 
 class MultiHeadLatentAttention(Module):
-    def __init__(self, d_model: int, n_heads: int, max_seq_len: int, 
+    def __init__(self, d_model: int, n_heads: int, max_seq_length: int, 
                  d_kv_comp: int, d_rope: int, dropout: float=0.1,  rope_base: int=10_000):
         super(MultiHeadLatentAttention, self).__init__()
 
@@ -444,7 +565,7 @@ class MultiHeadLatentAttention(Module):
         self.n_heads = n_heads
         self.d_head = d_model // n_heads
 
-        self.max_seq_len = max_seq_len
+        self.max_seq_length = max_seq_length
         self.scale = torch.sqrt(torch.FloatTensor([self.d_head])) #sqrt(d_k)
 
 
@@ -489,15 +610,15 @@ class MultiHeadLatentAttention(Module):
         arange_ = torch.arange(0, self.d_head, 2)[: h_half].float()
         theta = 1.0 / (self.rope_base ** (arange_ / self.d_head))
 
-        seq_idx = torch.arange(self.max_seq_len, dtype=theta.dtype)
+        seq_idx = torch.arange(self.max_seq_length, dtype=theta.dtype)
 
         #(max_seq_len x h_half[head_dim // 2])
         idx_theta = torch.einsum('i, j -> ij', seq_idx, theta).float()
 
 
         #(1 x max_seq_len x 1 x h_half)
-        cos_cached = idx_theta.cos().view(1, self.max_seq_len, 1, h_half)
-        sin_cached = idx_theta.sin().view(1, self.max_seq_len, 1, h_half)
+        cos_cached = idx_theta.cos().view(1, self.max_seq_length, 1, h_half)
+        sin_cached = idx_theta.sin().view(1, self.max_seq_length, 1, h_half)
 
         #regist buffer
         self.register_buffer('cos_cached', cos_cached, persistent=False)
@@ -538,11 +659,13 @@ class MultiHeadLatentAttention(Module):
 
         return (batch x seq x n_heads x head_dim)
         '''
+        device = Q.device
+
         seq_len = Q.size(1)
 
 
         #(batch x n_head x q_seq x k_seq)
-        scores = torch.einsum('bnhd, bmhd -> bhnm', Q, K) / self.scale
+        scores = torch.einsum('bnhd, bmhd -> bhnm', Q, K) / self.scale.to(device)
         
 
         #Attention Mask
@@ -552,7 +675,7 @@ class MultiHeadLatentAttention(Module):
 
         
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq_len).view(1, 1, seq_len, seq_len)
+        causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
         scores = self.__masked_fill(scores, causal_mask)
 
 
@@ -841,6 +964,8 @@ class DeepseekMoE(Module):
         '''
         x (batch x seq x d_model)
         '''
+        device= x.device
+
         batch, seq, d_model = x.shape
 
         #Shared experts (batch x seq x d_model)
@@ -855,20 +980,20 @@ class DeepseekMoE(Module):
 
 
         #Expert balance loss
-        expert_counts = torch.zeros(batch, seq, self.n_expert)
-        src = torch.ones(batch, seq, self.n_expert, dtype=torch.float) #(n_expert, )
+        expert_counts = torch.zeros(batch, seq, self.n_expert).to(device)
+        src = torch.ones(batch, seq, self.n_expert, dtype=torch.float).to(device) #(n_expert, )
         expert_counts.scatter_add_(index=top_k_indices, src=src, dim=-1)
-        
-        self.aux_loss += expert_counts.float().var() * self.aux_alpha
+
+        self.aux_loss = self.aux_loss.to(device) + expert_counts.float().var() * self.aux_alpha #aux_alpha = 0.003
 
         
         #Sparse computation
         #(batch x seq x d_model)
-        routed_out = torch.zeros(batch, seq, d_model)
+        routed_out = torch.zeros(batch, seq, d_model).to(device)
 
         for k in range(self.top_k):
             #채택된 expert_k(x) 계산 과정
-            expert_contrib = torch.zeros(batch, seq, d_model) #=expert_k(x)
+            expert_contrib = torch.zeros(batch, seq, d_model).to(device) #=expert_k(x)
 
             #(batch x seq)
             expert_mask = top_k_indices[..., k] #batch, seq별 expert_k의 번호(indice)
@@ -884,6 +1009,7 @@ class DeepseekMoE(Module):
 
                     #probs_out (len[x_b,s is True], ) ex) Tensor([0.1, 0.6, 0.3])
                     probs_out = top_k_probs[..., k][mask] 
+
                     expert_contrib[mask] = torch.einsum('nd, n -> nd', expert_out, probs_out)
                     
                     '''
@@ -1005,7 +1131,6 @@ class PreNormTransformerBlock(Module):
         att_out = self.attention(Q=norm_x, K=norm_x, V=norm_x, attention_mask=attention_mask)
         x = x + self.dropout(att_out)
 
-
         #FFNN
         norm_x = self.norm_ffn(x)
         ffn_out = self.ffn(norm_x)
@@ -1015,17 +1140,67 @@ class PreNormTransformerBlock(Module):
 
 
 class ALiBiTransformerBlock(Module):
-    def __init__(self):
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, 
+                 max_seq_length: int, dropout: float, eps: float=1e-6):
         super(ALiBiTransformerBlock, self).__init__()
+        self.norm_att = LayerNorm(d_model, eps=eps)
+        self.attention = ALiBiAttenion(d_model, n_heads, max_seq_length, dropout)
 
-    def forward(self, x: Tensor) -> Tensor:
-        pass
+        self.norm_ffn = LayerNorm(d_model, eps=eps)
+        self.ffn = PositionWiseFeedForward(d_model, d_ff, dropout)
+
+        self.dropout = Dropout(dropout)
+
+
+    def forward(self, x: Tensor, attention_mask: Tensor=None) -> Tensor:
+        #ALiBi Attention
+        norm_x = self.norm_att(x)
+        att_out = self.attention(Q=norm_x, K=norm_x, V=norm_x, attention_mask=attention_mask)
+        x = x + self.dropout(att_out)
+
+        #FFNN
+        norm_x = self.norm_ffn(x)
+        ffn_out = self.ffn(norm_x)
+
+        x = x + self.dropout(ffn_out)
+        return x
+
+
+class GroupedQueryTransformerBlock(Module):
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, 
+                 n_groups: int, max_seq_length: int, dropout: float, base: int, eps: float=1e-6):
+        super(GroupedQueryTransformerBlock, self).__init__()
+        self.norm_att = RMSNorm(d_model, eps=eps)
+        self.attention = GroupedQueryAttention(d_model, n_heads, n_groups, max_seq_length, dropout, base)
+
+        self.norm_ffn = RMSNorm(d_model, eps=eps)
+        self.ffn = PositionWiseFeedForward(d_model, d_ff, dropout)
+
+        self.dropout = Dropout(dropout)
+
+
+    def forward(self, x: Tensor, attention_mask: Tensor=None) -> Tensor:
+        #GQ Attention
+        norm_x = self.norm_att(x)
+        att_out = self.attention(Q=norm_x, K=norm_x, V=norm_x, attention_mask=attention_mask)
+        x = x + self.dropout(att_out)
+
+        #FFNN
+        norm_x = self.norm_ffn(x)
+        ffn_out = self.ffn(norm_x)
+
+        x = x + self.dropout(ffn_out)
+        return x
 
 
 class DeepseekTransformerBlock(Module):
     '''
+    `n_shared`: 항상 활성화 되는 expert의 수
+    `n_expert`: Routing에 의해 선택적으로 활성화되는 expert의 수
+    `top_k`: 선택할 expert의 수
     `d_kv_comp`: 압축(compress)된 Key, Value 값에 대한 잠재적 차원
     `d_rope`: Query, Key Head에 적용된 RoPE 차원
+    `aux_alpha`: MoE Layer의 aux_loss에 사용되는 상수
 
     >>> attention_layer = DeepseekTransformerBlock(...,)
     out = attention_layer(x: Tensor, kv_cache: tuple=None, attention_mask: Tensor=None)
@@ -1034,7 +1209,7 @@ class DeepseekTransformerBlock(Module):
     `Deep Seek의 `Multi Head Latent Attention`을 적용한 Transfrmer Block
     'RoPE` 적용
     '''
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_len: int, 
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_length: int, 
                  n_shared: int, n_expert: int, top_k: int, d_kv_comp: int, d_rope: int, 
                  aux_alpha: float=0.003, dropout: float=0.1, rope_base: int=10_000):
         super(DeepseekTransformerBlock, self).__init__()
@@ -1042,7 +1217,7 @@ class DeepseekTransformerBlock(Module):
         self.attention = MultiHeadLatentAttention(
             d_model=d_model,
             n_heads=n_heads,
-            max_seq_len=max_seq_len,
+            max_seq_length=max_seq_length,
             d_kv_comp=d_kv_comp,
             d_rope=d_rope,
             dropout=dropout,
