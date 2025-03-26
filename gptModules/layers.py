@@ -362,9 +362,9 @@ class GroupedQueryAttention(Module):
         self.w_q = Linear(d_model, d_model, bias=False) #(32 x 32)
 
         #share K와 V
-        #d_model(32) // n_groups(2) = 16
-        self.w_k = Linear(d_model, d_model // n_groups, bias=False) #(32 x 16)
-        self.w_v = Linear(d_model, d_model // n_groups, bias=False) #(32 x 16)
+        #head_dim(4) // n_groups(2) = 8
+        self.w_k = Linear(d_model, self.head_dim * n_groups, bias=False) #(32 x 8)
+        self.w_v = Linear(d_model, self.head_dim * n_groups, bias=False) #(32 x 8)
 
 
         self.dropout = Dropout(dropout)
@@ -469,9 +469,9 @@ class GroupedQueryAttentionWithoutRoPE(Module):
         self.w_q = Linear(d_model, d_model, bias=False) #(32 x 32)
 
         #share K와 V
-        #d_model(32) // n_groups(2) = 16
-        self.w_k = Linear(d_model, d_model // n_groups, bias=False) #(32 x 16)
-        self.w_v = Linear(d_model, d_model // n_groups, bias=False) #(32 x 16)
+        #head_dim(4) // n_groups(2) = 8
+        self.w_k = Linear(d_model, self.head_dim * n_groups, bias=False) #(32 x 8)
+        self.w_v = Linear(d_model, self.head_dim * n_groups, bias=False) #(32 x 8)
 
 
         self.dropout = Dropout(dropout)

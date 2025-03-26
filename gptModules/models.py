@@ -189,7 +189,7 @@ class DeepSeek(Module):
         self.out_linear = Linear(d_model, vocab_size)        
 
 
-    def forward(self, x: Tensor, attention_mask: Tensor) -> tuple[Tensor, Tensor]:
+    def forward(self, x: Tensor, attention_mask: Tensor=None) -> tuple[Tensor, Tensor]:
         '''
         return out, aux_loss
         '''

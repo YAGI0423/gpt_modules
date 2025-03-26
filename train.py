@@ -46,32 +46,39 @@ def preprocess_dataset(dataset: datasets) -> datasets:
         }
 
         '''
-        def create_ai_token(user_att: list, ai_token: list):
-            user_len = len(user_att)
-            ai_len = max_length - user_len - 1 #max_len - user_len - [EOS](1)
-
-            return [-100] * user_len + ai_token[:ai_len] + EOS_TOKEN
-        
 
         EOS_TOKEN = tokenizer.encode('[EOS]') #[50258]
 
-        user_text = ['user: ' + text for text in user_text]
-        ai_text = ['ai: ' + text for text in ai_text]
+        user_text = ['user: ' + text + ' ai: ' for text in user_text]
+        
 
-        user_tokens = tokenizer(user_text, max_length=max_length-1, truncation=True)
+        user_tokens = tokenizer(user_text)['input_ids']
         ai_tokens = tokenizer(ai_text)['input_ids']
 
-        #Create ai_token
-        ai_tokens = [create_ai_token(*x) for x in zip(user_tokens['attention_mask'], ai_tokens)]
+
+        input_ids = list()
+        labels = list()
+        for user, ai in zip(user_tokens, ai_tokens):
+            user_len = len(user)
+            ids_len = user_len + len(ai)
+
+            #Truncate
+            if (over_len := (ids_len - max_length)) > 0:
+                ai = ai[:-over_len]
+
+            x = user + ai #input_ids
+
+            y = [-100] * (user_len - 1) + ai + EOS_TOKEN
+
+            input_ids.append(x)
+            labels.append(y)
 
         return {
-            'input_idx': user_tokens['input_ids'],
-            'attention_mask': user_tokens['attention_mask'],
-            'label': ai_tokens,
+            'input_ids': input_ids,
+            'label': labels,
         }
     
     ds = dataset.map(lambda x: tokenizing(x['instruction'], x['response'], max_length=MAX_SEQ_LEN), batched=True)
-    ds = ds.rename_column('input_idx', 'input_ids')
     ds = ds.remove_columns(('instruction', 'context', 'response', 'category'))
     return ds
 
@@ -92,30 +99,35 @@ def custom_collate_fn(sample: list[dict]) -> dict[Tensor, Tensor, Tensor]:
         'label': list,
     }
     '''
+    EOS_TOKEN = tokenizer.encode('[EOS]') #[50258]
+    max_len = min(max([len(x['input_ids']) for x in sample]), 1000)
+
+
     #List To Dict
     sample_dict = {
         'input_ids': list(),
         'attention_mask': list(),
         'label': list(),
     }
-
-    max_len = 0
-
+    
     for x in sample:
-        sample_dict['input_ids'].append(x['input_ids'])
-        sample_dict['attention_mask'].append(x['attention_mask'])
-        sample_dict['label'].append(x['label'])
+        input_ids = x['input_ids']
+        input_ids_len = len(input_ids)
 
-        if (y_len := len(x['label'])) > max_len:
-            max_len = y_len
+        if input_ids_len > 1000:
+            continue
+
+        eos_list = EOS_TOKEN * (max_len - input_ids_len)
+        zero_list = [0] * (max_len - input_ids_len)
+        
+        sample_dict['input_ids'].append(input_ids + eos_list)
+        sample_dict['attention_mask'].append([1] * len(input_ids) + zero_list)
+        sample_dict['label'].append(x['label'] + eos_list)
 
 
-    for k, values in sample_dict.items():
-        for i, v in enumerate(values):
-            sample_dict[k][i] = sample_dict[k][i] + [0] * (max_len - len(v))
+    for k in sample_dict.keys():
         sample_dict[k] = torch.tensor(sample_dict[k])
 
-    sample_dict['label'] = sample_dict['label']#[:, :, None] #Batch x seq x 1
     return sample_dict
 
 
@@ -134,8 +146,9 @@ def split_datasets(dataset: datasets) -> datasets:
 def predict(model: Module, x: dict, device: str='cuda:0') -> Tensor:
     input_ids, att_mask, y = x['input_ids'], x['attention_mask'], x['label']
     input_ids, att_mask, y = input_ids.to(device), att_mask.to(device), y.to(device)
-    y = y.view(-1)
 
+
+    y = y.view(-1)
     predict = model(input_ids, att_mask)
 
     if type(model) is models.DeepSeek:
@@ -145,6 +158,21 @@ def predict(model: Module, x: dict, device: str='cuda:0') -> Tensor:
     else:
         y_hat = predict.view(-1, VOCAB_SIZE)
         return F.cross_entropy(y_hat, y, ignore_index=-100)
+
+
+def inference(text: str, model: Module, tokenizer: GPT2Tokenizer) -> str:
+    x = tokenizer.encode('user: ' + text + ' ai: ', return_tensors='pt').to(device)
+
+    for _ in range(10):
+        if type(model) is models.DeepSeek:
+            predict, _ = model(x)
+        else:
+            predict = model(x)
+
+        predict_token = predict[0, -1, :].max(dim=-1, keepdim=True).indices
+        
+        x = torch.concat((x, predict_token.view(1, 1)), dim=-1)
+    return tokenizer.decode(x[0])
 
 
 def create_graph(title: str, train_losses: list, val_losses: list, save_path: str) -> None:
@@ -188,7 +216,7 @@ if __name__ == '__main__':
 
     
     #Set Tokenizer
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     tokenizer.add_special_tokens({
         'pad_token': '[PAD]',
         'eos_token': '[EOS]',
@@ -240,9 +268,7 @@ if __name__ == '__main__':
         model = models.DeepSeek(**model_args)
     else:
         raise Exception('Invalid `model` name')
-    
     model.to(device)
-
 
     #Set Train
     optim = torch.optim.AdamW(model.parameters(), lr=0.000022, weight_decay=0.01)
@@ -253,6 +279,22 @@ if __name__ == '__main__':
     val_losses = list()
     
 
+    test_loader = DataLoader(
+            ds['test'],
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            collate_fn=custom_collate_fn
+        )
+        
+    val_loader = DataLoader(
+        ds['valid'],
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=custom_collate_fn
+    )
+
+    sample_text = 'What is a verb?'
+
     for e in range(EPOCH):
         train_loader = DataLoader(
             ds['train'],
@@ -260,24 +302,7 @@ if __name__ == '__main__':
             shuffle=True,
             collate_fn=custom_collate_fn
         )
-        train_loader = tqdm(train_loader)
-
-
-        test_loader = DataLoader(
-            ds['test'],
-            batch_size=BATCH_SIZE,
-            shuffle=False,
-            collate_fn=custom_collate_fn
-        )
-        
-
-        val_loader = DataLoader(
-            ds['valid'],
-            batch_size=BATCH_SIZE,
-            shuffle=False,
-            collate_fn=custom_collate_fn
-        )
-        
+        train_loader = tqdm(train_loader)        
 
         model.train()
         for train_data in train_loader:
@@ -290,10 +315,10 @@ if __name__ == '__main__':
 
             train_loss = train_loss.item()
 
-            desc = f'train loss: {train_loss:.3f}'
+            desc = f'{e+1}/{EPOCH}  train loss: {train_loss:.3f}'
             train_loader.set_description(desc)
             train_losses.append(train_loss)
-            
+
         
         
         #valid 
@@ -303,10 +328,25 @@ if __name__ == '__main__':
             for val_data in val_loader:
                 val_loss = predict(model, val_data, device=device).item()
                 val_buff.append(val_loss)
-        
+
+            #Sample Inference
+            predict_text = inference(sample_text, model, tokenizer)
+    
         val_loss = sum(val_buff) / len(val_buff)
         val_losses.append(val_loss)
 
+        print('\n', '< Sample Text >'.center(100, '-'))
+        print(f'Sample Text:    {sample_text}')
+        print(f'Predict Text:   {predict_text}')
+        print('-' * 100, end='\n')
+
+        #Save Graph
+        create_graph(
+            title=f'{args.model} Train Result',
+            train_losses=train_losses,
+            val_losses=val_losses,
+            save_path=f'{GRAPH_PATH}{args.model}_{EPOCH}.png', #path: './figures/DeepSeek_2.png
+        )
 
         
    
@@ -322,11 +362,11 @@ if __name__ == '__main__':
     print('=' * 100)
     
     '''
-    GPT         Test Loss: 3.106
-    GPT2        Test Loss:
-    ALiBi GPT   Test Loss:
-    LLaMA       Test Loss:
-    DeepSeek    Test Loss:
+    GPT         Test Loss: 2.402    Iter/Sec: 8.262
+    GPT2        Test Loss: 3.210    Iter/Sec: 7.235
+    ALiBi GPT   Test Loss: 1.702    Iter/Sec: 7.132
+    LLaMA       Test Loss: 2.681    Iter/Sec: 4.523
+    DeepSeek    Test Loss: 2.189    Iter/Sec: 2.688
     '''
 
 
@@ -334,13 +374,7 @@ if __name__ == '__main__':
     torch.save(model.state_dict(), MODEL_PATH + f'{args.model}_{EPOCH}EPOCH.pt') #path: './saved_models/DeepSeek_2.pt'
 
 
-    #Save Graph
-    create_graph(
-        title=f'{args.model} Train Result',
-        train_losses=train_losses,
-        val_losses=val_losses,
-        save_path=f'{GRAPH_PATH}{args.model}_{EPOCH}.png', #path: './figures/DeepSeek_2.png
-    )
+    
     
 
     
