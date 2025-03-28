@@ -6,6 +6,7 @@
 최종 수정일: 2025-03-28
 + 2025.03.27: 코드 작성 완료
 + 2025.03.28: READ ME 작성 완료
++ 2025.03.28: 프로젝트 종료
 ***
 
 <br>
@@ -194,43 +195,54 @@
 
 ### Example
 ```python
-#XOR Example
-$ python main.py --mode logic --device cuda
+#TRAIN and Save Model
+$ python train.py --model GPT --device cuda #choice model [GPT, GPT2, ALiBiGPT, LLaMA, DeepSeek,]
 
-#MNIST Example
-$ python main.py --mode mnist --device cuda
+'''
+`학습 완료 후, ./figures/`에 학습 그래프가 저장됨.
+`./saved_models`에 학습된 모델이 저장됨.
+'''
 
-#CIFAR-10 Example
-$ python main.py --mode cifar10 --depth 2 --device cuda
 
-#Auto Encoder Example
-$ python main.py --mode AE --depth 3 -- device cuda
+#Inference Example
+$ python inference.py --prompt 'Where is Florida' --model DeepSeek --device cuda #you can edit prompt
 
-#학습 완료 후 './figures/' 디렉토리에 그래프가 저장됨.
 
+>>> 
+============< DeepSeek Inference>===========
+'user: Where is Florida'
+'user: Where is Florida ai: Florida is a state located in the United States of America.'
+============================================
 ```
 <br>
 
-### Use Picky Activation
+### Use Models or Modules
 ```python
 import torch
-import activation
+from gptModules import models, layers
 
 
-x = torch.randn(size=(1, 5)) #Input Tensor: Batch(1) x Feature(5)
-print(f'input: {input_tensor}')
+VOCAB_SIZE = 256
+DEVICE = 'cuda:0'
+
+x = torch.randint(0, VOCAB_SIZE, size=(1, 5)).to(DEVICE) #Input Tensor: Batch(1) x Seq(5)
+att_mask = torch.ones(1, 5, dtype=torch.int).to(DEVICE)
+
+#x = tensor([[ 43, 224,  12, 199, 212]])
+#att_mask = tensor([[1, 1, 1, 1, 1]])
 
 
-#함수형 활성화 함수
-y_hat = activation.picky_(x)
-print(f'functional y_hat: {y_hat}')
+model = models.GPT(
+    vocab_size=VOCAB_SIZE,
+    n_layers=2,
+    n_heads=4,
+    d_model=64,
+    d_ff=1024,
+    max_seq_length=64,
+).to(DEVICE)
 
 
-#클래스형 활성화 함수
-actF = activation.Picky()
-y_hat = actF(x)
-print(f'functional y_hat: {y_hat}')
-
+out = model(x, att_mask) #Softmax 적용 안됨
 ```
 ***
 
@@ -239,10 +251,16 @@ print(f'functional y_hat: {y_hat}')
 ## 개발 환경
 **Language**
 
-    + Python 3.9.12
+    + Python 3.9.1
 
     
 **Library**
 
-    + tqdm 4.64.1
-    + pytorch 1.12.0
+    + tqdm 4.67.1
+    + pytorch 2.1.2+cu118
+    + transformers 4.49.0
+
+<br><br>
+
+## License
+This project is licensed under the terms of the [MIT license](https://github.com/YAGI0423/gpt_modules/blob/main/LICENSE).
