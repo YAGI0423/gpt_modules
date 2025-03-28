@@ -148,8 +148,6 @@
 <br><img src='./figures/ALiBiGPT_8.png' height=250><img src='./figures/LLaMA_8.png' height=250>
 <br><img src='./figures/DeepSeek_8.png' height=250>
 
-<br>
-
 <b>Fig 1</b>. Loss Graph of Models about Train and Validation Dataset.
 
 <br><br><br>
@@ -161,8 +159,6 @@
 |ALiBi GPT|<span style="color:red">**1.702**</span>|7.132|
 |LLaMA|2.681|4.523|
 |DeepSeek V2|2.189|2.688|
-
-<br>
 
 <b>Table 3</b>. Loss and *Iter/sec* of Test Dataset.
 
