@@ -17,7 +17,7 @@
 <br>
 
 ## 프로젝트 내용
-&nbsp;&nbsp; 본 프로젝트에서는 Pytorch 기반의 다양한 GPT 모델과 `RoPE(Rotary PositionalEmbedding)`, `MoE(Mixture of Expert)`와 같은 GPT 모델에 사용되는 여러 모듈을 제공한다. 나아가 Hugging Face에서 제공하는 `databricks/databricks-dolly-15k` 데이터셋을 이용하여 몇 가지 모델의 평가 지표를 제시한다. Table 1는 `gptModules` 라이브러리에서 제공하는 GPT 모델에 대한 설명이다.
+&nbsp;&nbsp; 본 프로젝트에서는 Pytorch 기반의 다양한 GPT 모델과 `RoPE(Rotary PositionalEmbedding)`, `MoE(Mixture of Expert)`와 같은 GPT 모델에 사용되는 여러 모듈을 제공한다. 나아가 Hugging Face에서 제공하는 `databricks/databricks-dolly-15k` 데이터셋을 이용하여 몇 가지 모델의 평가 지표를 제시한다. Table 1은 `gptModules` 라이브러리에서 제공하는 GPT 모델에 대한 설명이다.
 
 <br>
 
@@ -39,28 +39,6 @@
 
 <br>
 
-
-<style type="text/css">
-.tg  {border-collapse:collapse;border-color:#93a1a1;border-spacing:0;}
-.tg td{background-color:#fdf6e3;border-color:#93a1a1;border-style:solid;border-width:1px;color:#002b36;
-  font-family:Arial, sans-serif;font-size:14px;overflow:hidden;padding:10px 5px;word-break:normal;}
-.tg th{background-color:#657b83;border-color:#93a1a1;border-style:solid;border-width:1px;color:#fdf6e3;
-  font-family:Arial, sans-serif;font-size:14px;font-weight:normal;overflow:hidden;padding:10px 5px;word-break:normal;}
-.tg .tg-dxyq{border-color:inherit;font-size:x-small;font-weight:bold;text-align:center;vertical-align:middle}
-.tg .tg-hj9z{border-color:#656565;font-size:x-small;font-weight:bold;text-align:center;vertical-align:middle}
-.tg .tg-c7c9{border-color:#656565;font-size:x-small;font-weight:bold;text-align:center;vertical-align:top}
-.tg .tg-cjj3{background-color:#eee8d5;font-size:x-small;font-style:italic;text-align:left;vertical-align:top}
-.tg .tg-1l0q{font-size:x-small;text-align:center;vertical-align:top}
-.tg .tg-ue70{background-color:#eee8d5;border-color:inherit;font-size:x-small;font-weight:bold;text-align:center;
-  vertical-align:middle}
-.tg .tg-ejl1{font-size:x-small;font-weight:bold;text-align:center;vertical-align:top}
-.tg .tg-hquy{background-color:#eee8d5;border-color:inherit;font-size:x-small;font-style:italic;text-align:left;vertical-align:top}
-.tg .tg-mg0j{background-color:#eee8d5;border-color:inherit;color:#333333;font-size:x-small;text-align:center;vertical-align:top}
-.tg .tg-it0k{border-color:inherit;font-size:x-small;font-style:italic;text-align:left;vertical-align:top}
-.tg .tg-0ocd{border-color:inherit;color:#333333;font-size:x-small;text-align:center;vertical-align:top}
-.tg .tg-i3ef{font-size:x-small;font-style:italic;text-align:left;vertical-align:top}
-.tg .tg-96f4{background-color:#eee8d5;font-size:x-small;text-align:center;vertical-align:top}
-</style>
 <table class="tg" style="undefined;table-layout: fixed; width: 667px"><colgroup>
 <col style="width: 114.090909px">
 <col style="width: 275.181818px">
@@ -174,7 +152,7 @@
 
 <b>Fig 1</b>. Loss Graph of Models about Train and Validation Dataset.
 
-<br>
+<br><br><br>
 
 |Model|Test Loss|Iter/Sec|
 |:---:|:---|:---:|
