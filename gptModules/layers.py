@@ -116,43 +116,54 @@ class RotaryPositionalEmbeddings(Module):
 
 
 class ALiBiEmbeddings(Module):
-    def __init__(self, n_heads: int, max_seq_length: int):
+    def __init__(self, n_heads: int, n_groups: int, max_seq_length: int):
         super(ALiBiEmbeddings, self).__init__()
         self.alibi_bias: Tensor
+
+
         self.register_buffer(
             'alibi_bias', 
-            self.create_alibi_bias(n_heads, max_seq_length), #Tensor
+            self.create_alibi_bias(n_heads, max_seq_length, n_groups).contiguous(), #Tensor
             persistent=False,
         )
 
 
     @staticmethod
-    def create_alibi_bias(n_heads:int, max_seq_len: int) -> Tensor:
+    def create_alibi_bias(n_heads: int, max_seq_len: int, n_groups: int=None) -> Tensor:
         get_scale = lambda idx: 2**(-8*(idx / n_heads))
 
         #Distance Matrix (max_seq_len x max_seq_len)
         distance = torch.arange(max_seq_len)
-        distance = distance[:, None] - distance[None, :]
-        distance = distance[None, :, :].clamp(min=0) #음수 값 제거
+        distance = distance.view(max_seq_len, 1) - distance.view(1, max_seq_len)
+        distance = distance.view(1, max_seq_len, max_seq_len).clamp(min=0) #음수 값 제거
 
 
         #Head별 Scaling Factor (n_heads x 1 x 1)
         slopes = torch.tensor([get_scale(i) for i in range(n_heads)])
-        slopes = slopes[:, None, None]
+        slopes = slopes.view(n_heads, 1, 1)
 
         #Calcuate Bias (n_heads x max_seq_len x max_seq_len)
-        return -(distance * slopes)
+        alibi_bias = -(distance * slopes)
+
+        if n_groups is not None:
+            #(n_groups x [n_heads // n_groups] x max_seq_len x max_seq_len)
+            alibi_bias = alibi_bias.view(n_groups, -1, max_seq_len, max_seq_len)
+
+        #* (batch(1) x d_model x max_seq_len x max_seq_len) or
+        #* (batch(1) x n_groups x [n_heads // n_groups] x max_seq_len x max_seq_len)
+        return alibi_bias.unsqueeze(0)
 
 
     def forward(self, x: Tensor) -> Tensor:
         '''
-        x = (K * R^T) #(batch x n_heads x seq x seq)
+        x = (K * R^T) #(batch x n_heads x seq x seq) or \
+                      #(batch x n_groups x [n_heads // n_groups] x seq x seq)
 
-        return (batch x n_heads x q_seq x k_seq)
+        return (batch x n_heads x q_seq x k_seq) or \
+               (batch x n_groups x [n_heads // n_groups] x q_seq x k_seq)
         '''
         seq = x.size(-1)
-
-        alibi_bias = self.alibi_bias[:, :seq, :seq]
+        alibi_bias = self.alibi_bias[..., :seq, :seq]
         return x + alibi_bias #(batch x n_heads x q_seq x k_seq)
 #End===================================================
 
