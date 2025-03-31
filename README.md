@@ -7,6 +7,11 @@
 + 2025.03.27: 코드 작성 완료
 + 2025.03.28: READ ME 작성 완료
 + 2025.03.28: 프로젝트 종료
++ 2025.03.30: 오류 수정, 모듈 추가 및 삭제
+    * `Grouped Query Attention` 모듈의 `RoPE` 미적용 사항 수정
+    * `RoPEAttenion` 모듈 추가
+    * `RoPETransformerBlock` 모듈 추가
+    * `AddNorm` 모듈 삭제
 ***
 
 <br>
@@ -83,6 +88,10 @@
     <td class="tg-mg0j">layers.ALiBiAttention(...)</td>
   </tr>
   <tr>
+    <td class="tg-hquy">· RoPE Attention</td>
+    <td class="tg-mg0j">layers.RoPEAttention(...)</td>
+  </tr>
+  <tr>
     <td class="tg-it0k">· GQA(Grouped Query Attention) **with RoPE</td>
     <td class="tg-0ocd">layers.GroupedQueryAttention(...)</td>
   </tr>
@@ -119,6 +128,10 @@
   <tr>
     <td class="tg-it0k">· ALiBi Transformer Block</td>
     <td class="tg-0ocd">layers.ALiBiTransformerBlock(...)</td>
+  </tr>
+  <tr>
+    <td class="tg-it0k">· RoPE Transformer Block</td>
+    <td class="tg-0ocd">layers.RoPETransformerBlock(...)</td>
   </tr>
   <tr>
     <td class="tg-hquy">· Grouped Query Transformer Block</td>
