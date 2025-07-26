@@ -1206,10 +1206,11 @@ class TransformerBlock(Module):
     '''
     Original Layer
     '''
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float):
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float,
+                 is_causal: bool=True):
         super(TransformerBlock, self).__init__()
 
-        self.attention = MaskedMultiHeadAttention(d_model, n_heads, dropout)
+        self.attention = MaskedMultiHeadAttention(d_model, n_heads, dropout, is_causal=is_causal)
         self.norm_att = LayerNorm(d_model)
         self.ffn = PositionWiseFeedForward(d_model, d_ff, dropout)
         self.norm_ffn = LayerNorm(d_model)
@@ -1233,11 +1234,12 @@ class PreNormTransformerBlock(Module):
     Add & Norm(Layer Normalization) 레이어가 Attention 및 FFNN 앞에 위치하는
     Pre-Norm 구조
     '''
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float, eps: float=1e-6):
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float, eps: float=1e-6,
+                 is_causal: bool=True):
         super(PreNormTransformerBlock, self).__init__()
         
         self.norm_att = LayerNorm(d_model, eps=eps)
-        self.attention = MaskedMultiHeadAttention(d_model, n_heads, dropout)
+        self.attention = MaskedMultiHeadAttention(d_model, n_heads, dropout, is_causal=is_causal)
 
         self.norm_ffn = LayerNorm(d_model, eps=eps)
         self.ffn = PositionWiseFeedForward(d_model, d_ff, dropout)
@@ -1261,10 +1263,11 @@ class PreNormTransformerBlock(Module):
 
 class ALiBiTransformerBlock(Module):
     def __init__(self, d_model: int, n_heads: int, d_ff: int, 
-                 max_seq_length: int, dropout: float, eps: float=1e-6):
+                 max_seq_length: int, dropout: float, eps: float=1e-6,
+                 is_causal: bool=True):
         super(ALiBiTransformerBlock, self).__init__()
         self.norm_att = LayerNorm(d_model, eps=eps)
-        self.attention = ALiBiAttenion(d_model, n_heads, max_seq_length, dropout)
+        self.attention = ALiBiAttenion(d_model, n_heads, max_seq_length, dropout, is_causal=is_causal)
 
         self.norm_ffn = LayerNorm(d_model, eps=eps)
         self.ffn = PositionWiseFeedForward(d_model, d_ff, dropout)
@@ -1288,10 +1291,11 @@ class ALiBiTransformerBlock(Module):
 
 class RoPETransformerBlock(Module):
     def __init__(self, d_model: int, n_heads: int, d_ff: int, 
-                 max_seq_length: int, base: int, dropout: float, eps: float=1e-6):
+                 max_seq_length: int, base: int, dropout: float, eps: float=1e-6,
+                 is_causal: bool=True):
         super(RoPETransformerBlock, self).__init__()
         self.norm_att = LayerNorm(d_model, eps=eps)
-        self.attention = RoPEAttenion(d_model, n_heads, max_seq_length, dropout, base)
+        self.attention = RoPEAttenion(d_model, n_heads, max_seq_length, dropout, base, is_causal=is_causal)
 
         self.norm_ffn = LayerNorm(d_model, eps=eps)
         self.ffn = PositionWiseFeedForward(d_model, d_ff, dropout)
@@ -1315,10 +1319,11 @@ class RoPETransformerBlock(Module):
 
 class GroupedQueryTransformerBlock(Module):
     def __init__(self, d_model: int, n_heads: int, d_ff: int, 
-                 n_groups: int, max_seq_length: int, dropout: float, base: int, eps: float=1e-6):
+                 n_groups: int, max_seq_length: int, dropout: float, base: int, eps: float=1e-6,
+                 is_causal: bool=True):
         super(GroupedQueryTransformerBlock, self).__init__()
         self.norm_att = RMSNorm(d_model, eps=eps)
-        self.attention = GroupedQueryAttention(d_model, n_heads, n_groups, max_seq_length, dropout, base)
+        self.attention = GroupedQueryAttention(d_model, n_heads, n_groups, max_seq_length, dropout, base, is_causal=is_causal)
 
         self.norm_ffn = RMSNorm(d_model, eps=eps)
         self.ffn = PositionWiseFeedForward(d_model, d_ff, dropout)
@@ -1358,7 +1363,8 @@ class DeepseekTransformerBlock(Module):
     '''
     def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_length: int, 
                  n_shared: int, n_expert: int, top_k: int, d_kv_comp: int, d_rope: int, 
-                 aux_alpha: float=0.003, dropout: float=0.1, rope_base: int=10_000):
+                 aux_alpha: float=0.003, dropout: float=0.1, rope_base: int=10_000,
+                 is_causal: bool=True):
         super(DeepseekTransformerBlock, self).__init__()
 
         self.attention = MultiHeadLatentAttention(
@@ -1369,6 +1375,7 @@ class DeepseekTransformerBlock(Module):
             d_rope=d_rope,
             dropout=dropout,
             rope_base=rope_base,
+            is_causal=is_causal,
         )
         self.norm_att = RMSNorm(d_model)
         self.ffn = DeepseekMoE(d_model, d_ff, n_shared, n_expert, top_k, aux_alpha)
@@ -1408,7 +1415,8 @@ class DeepseekTransformerBlockWithoutRoPE(Module):
     '''
     def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_len: int, 
                  n_shared: int, n_expert: int, top_k: int, d_kv_comp: int, 
-                 aux_alpha: float=0.003, dropout: float=0.1):
+                 aux_alpha: float=0.003, dropout: float=0.1,
+                 is_causal: bool=True):
         super(DeepseekTransformerBlockWithoutRoPE, self).__init__()
 
         self.attention = MultiHeadLatentAttentionWithoutRoPE(
@@ -1416,6 +1424,7 @@ class DeepseekTransformerBlockWithoutRoPE(Module):
             n_heads=n_heads,
             d_kv_comp=d_kv_comp,
             dropout=dropout,
+            is_causal=is_causal,
         )
         self.norm_att = RMSNorm(d_model)
         self.ffn = DeepseekMoE(d_model, d_ff, n_shared, n_expert, top_k, aux_alpha)
