@@ -172,10 +172,12 @@ class ALiBiEmbeddings(Module):
 
 #<Multi Head Attention Layer>==========================
 class MaskedMultiHeadAttention(Module):
-    def __init__(self, d_model: int, n_heads: int, dropout: float):
+    def __init__(self, d_model: int, n_heads: int, dropout: float, is_causal: bool=True):
         super(MaskedMultiHeadAttention, self).__init__()
 
         #Meta Data
+        self.is_causal = is_causal
+
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads #각 head의 차원
@@ -220,8 +222,9 @@ class MaskedMultiHeadAttention(Module):
             scores = self.__masked_fill(scores, attention_mask[:, None, None, :])
         
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
-        scores = self.__masked_fill(scores, causal_mask)
+        if self.is_causal:
+            causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
+            scores = self.__masked_fill(scores, causal_mask)
 
 
         attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
@@ -258,10 +261,13 @@ class MaskedMultiHeadAttention(Module):
 
 
 class ALiBiAttenion(Module):
-    def __init__(self, d_model: int, n_heads: int, max_seq_length: int, dropout: float):
+    def __init__(self, d_model: int, n_heads: int, max_seq_length: int, dropout: float, 
+                 is_causal: bool=True):
         super(ALiBiAttenion, self).__init__()
 
         #Meta Data
+        self.is_causal = is_causal
+
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads #각 head의 차원
@@ -316,8 +322,9 @@ class ALiBiAttenion(Module):
 
         
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
-        scores = self.__masked_fill(scores, causal_mask)
+        if self.is_causal:
+            causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
+            scores = self.__masked_fill(scores, causal_mask)
 
 
         attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
@@ -353,10 +360,13 @@ class RoPEAttenion(Module):
     '''
     RoPE를 적용한 Attention
     '''
-    def __init__(self, d_model: int, n_heads: int, max_seq_length: int, dropout: float, base: int):
+    def __init__(self, d_model: int, n_heads: int, max_seq_length: int, dropout: float, base: int, 
+                 is_causal: bool=True):
         super(RoPEAttenion, self).__init__()
 
         #Meta Data
+        self.is_causal = is_causal
+
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads #각 head의 차원
@@ -409,8 +419,9 @@ class RoPEAttenion(Module):
 
         
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
-        scores = self.__masked_fill(scores, causal_mask)
+        if self.is_causal:
+            causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
+            scores = self.__masked_fill(scores, causal_mask)
 
 
         attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
@@ -450,11 +461,14 @@ class GroupedQueryAttention(Module):
     '''
     RoPE 적용된 GQA
     '''
-    def __init__(self, d_model: int, n_heads: int, n_groups: int, max_seq_length: int, dropout: float, base: int):
+    def __init__(self, d_model: int, n_heads: int, n_groups: int, max_seq_length: int, dropout: float, base: int,
+                 is_causal: bool=True):
         super(GroupedQueryAttention, self).__init__()
         assert n_heads % n_groups == 0, '`n_heads` must be divisible by `n_groups`'
 
         #Meta Data
+        self.is_causal = is_causal
+
         self.d_model = d_model #32
         self.n_heads = n_heads #8
         self.n_groups = n_groups #2
@@ -512,8 +526,9 @@ class GroupedQueryAttention(Module):
             scores = self.__masked_fill(scores, attention_mask[:, None, None, None, :])
 
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq).to(device).view(1, seq, 1, 1, seq)
-        scores = self.__masked_fill(scores, causal_mask)
+        if self.is_causal:
+            causal_mask = self.__get_causal_mask(seq).to(device).view(1, seq, 1, 1, seq)
+            scores = self.__masked_fill(scores, causal_mask)
 
 
         attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
@@ -561,11 +576,14 @@ class GroupedQueryAttentionWithoutRoPE(Module):
     '''
     RoPE 미적용 GQA
     '''
-    def __init__(self, d_model: int, n_heads: int, n_groups: int, dropout: float):
+    def __init__(self, d_model: int, n_heads: int, n_groups: int, dropout: float,
+                 is_causal: bool=True):
         super(GroupedQueryAttentionWithoutRoPE, self).__init__()
         assert n_heads % n_groups == 0, '`n_heads` must be divisible by `n_groups`'
 
         #Meta Data
+        self.is_causal = is_causal
+
         self.d_model = d_model #32
         self.n_heads = n_heads #8
         self.n_groups = n_groups #2
@@ -623,8 +641,9 @@ class GroupedQueryAttentionWithoutRoPE(Module):
 
 
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq).to(device).view(1, seq, 1, 1, seq)
-        scores = self.__masked_fill(scores, causal_mask)
+        if self.is_causal:
+            causal_mask = self.__get_causal_mask(seq).to(device).view(1, seq, 1, 1, seq)
+            scores = self.__masked_fill(scores, causal_mask)
 
 
         attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
@@ -666,10 +685,13 @@ class GroupedQueryAttentionWithoutRoPE(Module):
 
 class MultiHeadLatentAttention(Module):
     def __init__(self, d_model: int, n_heads: int, max_seq_length: int, 
-                 d_kv_comp: int, d_rope: int, dropout: float=0.1,  rope_base: int=10_000):
+                 d_kv_comp: int, d_rope: int, dropout: float=0.1,  rope_base: int=10_000,
+                 is_causal: bool=True):
         super(MultiHeadLatentAttention, self).__init__()
 
         #Meta Data
+        self.is_causal = is_causal
+
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_head = d_model // n_heads
@@ -784,8 +806,9 @@ class MultiHeadLatentAttention(Module):
 
         
         #Causal Mask
-        causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
-        scores = self.__masked_fill(scores, causal_mask)
+        if self.is_causal:
+            causal_mask = self.__get_causal_mask(seq_len).to(device).view(1, 1, seq_len, seq_len)
+            scores = self.__masked_fill(scores, causal_mask)
 
 
         attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
@@ -859,10 +882,12 @@ class MultiHeadLatentAttentionWithoutRoPE(Module):
     Roray Position Embedding을 적용하지 않은 MLA
     '''
     def __init__(self, d_model: int, n_heads: int, 
-                 d_kv_comp: int, dropout: float=0.1):
+                 d_kv_comp: int, dropout: float=0.1, is_causal: bool=True):
         super(MultiHeadLatentAttentionWithoutRoPE, self).__init__()
 
         #Meta Data
+        self.is_causal = is_causal
+
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_head = d_model // n_heads
@@ -924,8 +949,9 @@ class MultiHeadLatentAttentionWithoutRoPE(Module):
             scores = self.__masked_fill(scores, att_mask)
         
         #Causal Mask
-        causal_mask = self.__get_causal_mask(q_seq).to(device).view(1, 1, q_seq, q_seq)
-        scores = self.__masked_fill(scores, causal_mask)
+        if self.is_causal:
+            causal_mask = self.__get_causal_mask(q_seq).to(device).view(1, 1, q_seq, q_seq)
+            scores = self.__masked_fill(scores, causal_mask)
 
         attention_weights = F.softmax(scores, dim=-1) #Q(행)를 기준으로 softmax
         attention_weights = self.dropout(attention_weights)
